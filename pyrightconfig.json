@@ -1,0 +1,12 @@
+{
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Windows",
+  "pythonPath": ".venv/Scripts/python.exe",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "backend"
+  ],
+  "useLibraryCodeForTypes": true
+}
+
