@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+import joblib
 import pandas as pd
 import numpy as np
 from numpy.typing import NDArray
@@ -13,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.config import DATASET_PATH
+from backend.config import DATASET_PATH, MODEL_DIR
 
 FEATURE_COLS = [
     'rainfall_mm', 'temperature_c', 'elevation_m', 'ndvi', 'ndwi',
@@ -136,9 +137,25 @@ class DatasetPipeline:
                 np.asarray(X_test_scaled), np.asarray(y_test), 
                 stats)
 
+    def save(self, model_dir: str = MODEL_DIR):
+        os.makedirs(model_dir, exist_ok=True)
+        joblib.dump(self.scaler, os.path.join(model_dir, "scaler.joblib"))
+        joblib.dump(self.hazard_type_encoder, os.path.join(model_dir, "hazard_encoder.joblib"))
+
+    def load(self, model_dir: str = MODEL_DIR) -> bool:
+        s_path = os.path.join(model_dir, "scaler.joblib")
+        h_path = os.path.join(model_dir, "hazard_encoder.joblib")
+        if os.path.exists(s_path) and os.path.exists(h_path):
+            self.scaler = joblib.load(s_path)
+            self.hazard_type_encoder = joblib.load(h_path)
+            self.is_fitted = True
+            return True
+        return False
+
     def transform_single(self, input_dict: dict[str, Any]) -> NDArray[Any]:
         if not self.is_fitted:
-            self.get_train_test_splits()
+            if not self.load():
+                self.get_train_test_splits()
 
         df = pd.DataFrame([input_dict])
         

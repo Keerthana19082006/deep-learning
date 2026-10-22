@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 import torch
@@ -9,6 +10,8 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.config import MODEL_DIR
 
 class SatelliteCNNFeatureExtractor(nn.Module):
     """
@@ -167,6 +170,28 @@ def train_hybrid_pytorch_model(X_train, y_train, X_val, y_val, epochs=25, batch_
         history['val_acc'].append(round(val_acc, 4))
 
     return model, history
+
+
+def save_hybrid_model(model: EarthGuardianHybridModel, path: str | None = None) -> str:
+    if path is None:
+        path = os.path.join(MODEL_DIR, "pytorch_hybrid.pt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(model.state_dict(), path)
+    return path
+
+
+def load_hybrid_model(path: str | None = None, tabular_dim: int = 14) -> EarthGuardianHybridModel | None:
+    if path is None:
+        path = os.path.join(MODEL_DIR, "pytorch_hybrid.pt")
+    if os.path.exists(path):
+        model = EarthGuardianHybridModel(tabular_dim=tabular_dim, num_classes=3)
+        try:
+            model.load_state_dict(torch.load(path, map_location=torch.device('cpu'), weights_only=True))
+        except TypeError:
+            model.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
+        model.eval()
+        return model
+    return None
 
 
 if __name__ == "__main__":

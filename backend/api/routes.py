@@ -1,3 +1,4 @@
+import os
 from typing import Any, cast
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 import numpy as np
@@ -5,10 +6,16 @@ import pandas as pd
 import torch
 import json
 
+from backend.config import MODEL_DIR
 from backend.api.schemas import PredictionRequest, PredictionResponse, TrainModelResponse
 from backend.ml.dataset_pipeline import DatasetPipeline, FEATURE_COLS
 from backend.ml.tabular_model import TabularModelManager, LABEL_MAP
-from backend.ml.deep_learning_model import EarthGuardianHybridModel, train_hybrid_pytorch_model
+from backend.ml.deep_learning_model import (
+    EarthGuardianHybridModel,
+    train_hybrid_pytorch_model,
+    save_hybrid_model,
+    load_hybrid_model
+)
 from backend.ml.evaluator import evaluate_model_performance
 from backend.ml.explainer import explain_risk_level
 from backend.services.usgs_service import fetch_usgs_earthquakes
@@ -25,16 +32,43 @@ hybrid_pytorch_model: EarthGuardianHybridModel | None = None
 latest_metrics = None
 latest_loss_history = {}
 
-def initialize_ml_system():
+def initialize_ml_system(force_retrain: bool = False):
     global hybrid_pytorch_model, latest_metrics, latest_loss_history
+    pytorch_path = os.path.join(MODEL_DIR, "pytorch_hybrid.pt")
+    
+    if not force_retrain:
+        try:
+            pipeline_loaded = pipeline.load()
+            tabular_loaded = tabular_manager.load()
+            loaded_pytorch = load_hybrid_model(pytorch_path, tabular_dim=len(FEATURE_COLS)) if os.path.exists(pytorch_path) else None
+            db_run = get_latest_model_run()
+            
+            if pipeline_loaded and tabular_loaded and loaded_pytorch is not None and db_run:
+                hybrid_pytorch_model = loaded_pytorch
+                latest_metrics = {
+                    "accuracy": db_run['accuracy'],
+                    "precision": db_run['precision'],
+                    "recall": db_run['recall'],
+                    "f1_score": db_run['f1_score'],
+                    "roc_auc": db_run.get('roc_auc', 0.0),
+                    "confusion_matrix": db_run['confusion_matrix'],
+                }
+                latest_loss_history = db_run.get('loss_history', {})
+                print(f"ML Pipeline loaded pre-trained models successfully. Accuracy: {db_run['accuracy']*100:.2f}%")
+                return
+        except Exception as e:
+            print(f"Warning: Pre-trained model loading failed ({e}), training fresh...")
+
     try:
         X_train, y_train, X_val, y_val, X_test, y_test, stats = pipeline.get_train_test_splits()
+        pipeline.save()
         tabular_manager.fit(X_train, y_train)
         
         # Train PyTorch hybrid transformer model
-        pytorch_model, history = train_hybrid_pytorch_model(X_train, y_train, X_val, y_val, epochs=15)
+        pytorch_model, history = train_hybrid_pytorch_model(X_train, y_train, X_val, y_val, epochs=12)
         hybrid_pytorch_model = pytorch_model
         latest_loss_history = history
+        save_hybrid_model(pytorch_model, pytorch_path)
         
         # Evaluate on test set using combined ensemble
         probas_tabular = tabular_manager.predict_proba(cast(np.ndarray, X_test))
@@ -263,7 +297,7 @@ def get_model_performance() -> dict[str, Any]:
 @router.post("/train", response_model=TrainModelResponse)
 def train_model():
     try:
-        initialize_ml_system()
+        initialize_ml_system(force_retrain=True)
         db_run = get_latest_model_run() or {}
         raw_df = pipeline.load_data()
         

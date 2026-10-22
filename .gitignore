@@ -17,3 +17,6 @@ build/
 .vscode/
 *.log
 *.db
+.pytest_cache/
+
+frontend/vite.config.js.timestamp-*.mjs
