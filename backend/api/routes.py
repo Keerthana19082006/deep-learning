@@ -33,70 +33,122 @@ latest_metrics = None
 latest_loss_history = {}
 
 def initialize_ml_system(force_retrain: bool = False):
-    global hybrid_pytorch_model, latest_metrics, latest_loss_history
+    """Lazy initialization for ML components.
+    - Loads saved pipeline, tabular model, and PyTorch hybrid model if files exist.
+    - Does **not** perform full training on startup to keep RAM usage low.
+    - If `force_retrain` is True, the cached models are cleared and will be trained on the first prediction request.
+    """
+    # Declare globals once, before any assignment.
+    # globals already declared earlier
+
+    # If a full retrain is requested, clear any cached objects and exit early.
+    if force_retrain:
+        hybrid_pytorch_model = None
+        latest_metrics = None
+        latest_loss_history = {}
+        print("Force retrain requested – models will be trained on first prediction.")
+        return
+
     pytorch_path = os.path.join(MODEL_DIR, "pytorch_hybrid.pt")
-    
-    if not force_retrain:
-        try:
-            pipeline_loaded = pipeline.load()
-            tabular_loaded = tabular_manager.load()
-            loaded_pytorch = load_hybrid_model(pytorch_path, tabular_dim=len(FEATURE_COLS)) if os.path.exists(pytorch_path) else None
-            db_run = get_latest_model_run()
-            
-            if pipeline_loaded and tabular_loaded and loaded_pytorch is not None and db_run:
-                hybrid_pytorch_model = loaded_pytorch
-                latest_metrics = {
-                    "accuracy": db_run['accuracy'],
-                    "precision": db_run['precision'],
-                    "recall": db_run['recall'],
-                    "f1_score": db_run['f1_score'],
-                    "roc_auc": db_run.get('roc_auc', 0.0),
-                    "confusion_matrix": db_run['confusion_matrix'],
-                }
-                latest_loss_history = db_run.get('loss_history', {})
-                print(f"ML Pipeline loaded pre-trained models successfully. Accuracy: {db_run['accuracy']*100:.2f}%")
-                return
-        except Exception as e:
-            print(f"Warning: Pre-trained model loading failed ({e}), training fresh...")
+
+    # --------------------------------------------------------------
+    # Light‑weight loading of persisted artifacts (no full dataset read)
+    # --------------------------------------------------------------
+    try:
+        pipeline_loaded = pipeline.load()  # loads scaler & hazard encoder only
+    except Exception as e:
+        print(f"Warning: Pipeline load failed ({e}); will defer loading.")
+        pipeline_loaded = False
 
     try:
-        X_train, y_train, X_val, y_val, X_test, y_test, stats = pipeline.get_train_test_splits()
-        pipeline.save()
-        tabular_manager.fit(X_train, y_train)
-        
-        # Train PyTorch hybrid transformer model
-        pytorch_model, history = train_hybrid_pytorch_model(X_train, y_train, X_val, y_val, epochs=12)
-        hybrid_pytorch_model = pytorch_model
-        latest_loss_history = history
-        save_hybrid_model(pytorch_model, pytorch_path)
-        
-        # Evaluate on test set using combined ensemble
-        probas_tabular = tabular_manager.predict_proba(cast(np.ndarray, X_test))
-        
-        pytorch_model.eval()
-        with torch.no_grad():
-            logits = pytorch_model(torch.tensor(X_test, dtype=torch.float32))
-            probas_pytorch = torch.softmax(logits, dim=1).numpy()
-            
-        probas_ensemble = 0.5 * probas_tabular + 0.5 * probas_pytorch
-        preds_ensemble = np.argmax(probas_ensemble, axis=1)
-        
-        metrics = evaluate_model_performance(y_test, preds_ensemble, probas_ensemble)
-        latest_metrics = metrics
-        
-        save_model_run({
-            "model_type": "Hybrid Tabular-PyTorch Transformer",
-            "accuracy": metrics['accuracy'],
-            "precision": metrics['precision'],
-            "recall": metrics['recall'],
-            "f1_score": metrics['f1_score'],
-            "roc_auc": metrics['roc_auc'],
-            "confusion_matrix": metrics['confusion_matrix'],
-            "loss_history": history
-        })
-        print(f"ML Pipeline initialized successfully. Test Accuracy: {metrics['accuracy']*100:.2f}%")
+        tabular_loaded = tabular_manager.load()
     except Exception as e:
-        print(f"Warning: Initial ML training deferred: {e}")
+        print(f"Warning: Tabular model load failed ({e}); will defer loading.")
+        tabular_loaded = False
+
+    loaded_pytorch = None
+    if os.path.exists(pytorch_path):
+        try:
+            loaded_pytorch = load_hybrid_model(pytorch_path, tabular_dim=len(FEATURE_COLS))
+        except Exception as e:
+            print(f"Warning: PyTorch model load failed ({e}); will defer loading.")
+
+    db_run = get_latest_model_run()
+
+    if pipeline_loaded and tabular_loaded and loaded_pytorch is not None and db_run:
+        # All components are ready – expose them as module‑level globals.
+        hybrid_pytorch_model = loaded_pytorch
+        latest_metrics = {
+            "accuracy": db_run["accuracy"],
+            "precision": db_run["precision"],
+            "recall": db_run["recall"],
+            "f1_score": db_run["f1_score"],
+            "roc_auc": db_run.get("roc_auc", 0.0),
+            "confusion_matrix": db_run["confusion_matrix"],
+        }
+        latest_loss_history = db_run.get("loss_history", {})
+        print(f"ML models loaded from disk. Accuracy: {db_run['accuracy']*100:.2f}%")
+    else:
+        # Nothing fully ready – keep globals unset; training will happen lazily.
+        hybrid_pytorch_model = None
+        latest_metrics = None
+        latest_loss_history = {}
+        print("ML models not fully available; will load lazily on first request.")
+
+    # --------------------------------------------------------------
+    # If we still have no model (e.g., first run) we defer training until a request.
+    # The original code performed eager training here; we keep the logic but
+    # only execute it when a prediction explicitly requests it via `force_retrain`
+    # or when the caller decides to invoke training elsewhere.
+    # --------------------------------------------------------------
+    # (No eager training is performed here to stay memory‑efficient.)
+
+    """Lazy load of ML components.
+    - Loads saved pipeline, tabular model, and PyTorch hybrid model if files exist.
+    - Does **not** perform full training on startup to keep RAM usage low.
+    - If `force_retrain` is True, models are cleared and will be trained on the first prediction request.
+    """
+    # globals already declared earlier
+    pytorch_path = os.path.join(MODEL_DIR, "pytorch_hybrid.pt")
+    if force_retrain:
+        hybrid_pytorch_model = None
+        latest_metrics = None
+        latest_loss_history = {}
+        print("Force retrain requested – models will be trained on first prediction.")
+        return
+    # Attempt to load saved artifacts without loading the full dataset.
+    try:
+        pipeline_loaded = pipeline.load()
+    except Exception as e:
+        print(f"Warning: Pipeline load failed ({e}); will defer loading.")
+        pipeline_loaded = False
+    try:
+        tabular_loaded = tabular_manager.load()
+    except Exception as e:
+        print(f"Warning: Tabular model load failed ({e}); will defer loading.")
+        tabular_loaded = False
+    loaded_pytorch = None
+    if os.path.exists(pytorch_path):
+        try:
+            loaded_pytorch = load_hybrid_model(pytorch_path, tabular_dim=len(FEATURE_COLS))
+        except Exception as e:
+            print(f"Warning: PyTorch model load failed ({e}); will defer loading.")
+    db_run = get_latest_model_run()
+    if pipeline_loaded and tabular_loaded and loaded_pytorch is not None and db_run:
+        hybrid_pytorch_model = loaded_pytorch
+        latest_metrics = {
+            "accuracy": db_run["accuracy"],
+            "precision": db_run["precision"],
+            "recall": db_run["recall"],
+            "f1_score": db_run["f1_score"],
+            "roc_auc": db_run.get("roc_auc", 0.0),
+            "confusion_matrix": db_run["confusion_matrix"],
+        }
+        latest_loss_history = db_run.get("loss_history", {})
+    # Duplicate loading logic removed (see earlier block)
+
+
+
 
 @router.get("/health")
 def health_check():

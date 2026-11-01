@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -12,16 +13,48 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from backend.database import init_db
-from backend.api.routes import router as api_router, initialize_ml_system
+from backend.api.routes import router as api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup tasks
-    print("Starting EarthGuardian AI Backend Engine...")
+    # Startup tasks (lightweight)
+    print("Starting EarthGuardian AI Backend Engine…")
     init_db()
-    initialize_ml_system()
+    # Deferred heavy ML loading – will happen on first request
     yield
-    print("Shutting down EarthGuardian AI Backend...")
+    print("Shutting down EarthGuardian AI Backend…")
+
+app = FastAPI(
+    title="EarthGuardian AI - Multi-Hazard Disaster Risk Prediction API",
+    description="Backend AI API for Multi-Hazard Disaster Risk Prediction using Satellite Imagery, Environmental Data, Seismic Data, and PyTorch Temporal Transformers.",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# Enable CORS for React Vite frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(api_router)
+
+@app.get("/")
+def root():
+    return {
+        "title": "EarthGuardian AI",
+        "description": "Multi-Hazard Disaster Risk Prediction Using Satellite Imagery and Temporal Analysis",
+        "docs_url": "/docs",
+        "health_check": "/api/health"
+    }
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, reload=True)
+
 
 app = FastAPI(
     title="EarthGuardian AI - Multi-Hazard Disaster Risk Prediction API",
